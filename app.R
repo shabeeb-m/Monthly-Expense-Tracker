@@ -32,8 +32,9 @@ ui <- fluidPage(
       .dataTables_wrapper { font-size: 13px; }
       .shiny-input-container { width: 100% !important; }
       .selectize-input { font-size: 14px; }
-      .title-text { font-size: 24px; font-weight: bold; }
+      .title-text { font-size: 22px; font-weight: bold; }
       .btn-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+      .btn-icon { font-size: 20px; width: 45px; height: 45px; border-radius: 50%; padding:0; }
     "))
   ),
   
@@ -42,10 +43,9 @@ ui <- fluidPage(
   fluidRow(
     column(12,
            div(class = "btn-row",
-               actionButton("open_modal", HTML("<b style='font-size:20px;'>+</b>"), 
-                            class = "btn-success", style = "font-size:20px; width:45px; height:45px; border-radius:50%;"),
-               actionButton("delete_mode_btn", HTML("🗑"), 
-                            class = "btn-danger", style = "font-size:20px; width:45px; height:45px; border-radius:50%;")
+               actionButton("open_modal", HTML("<b style='font-size:20px;'>+</b>"), class = "btn-success btn-icon"),
+               actionButton("delete_mode_btn", HTML("🗑"), class = "btn-danger btn-icon"),
+               downloadButton("download_data", label = NULL, class = "btn-primary btn-icon", icon = icon("download"))
            )
     )
   ),
@@ -175,6 +175,17 @@ server <- function(input, output, session) {
       showNotification("⚠️ No rows selected for deletion.", type = "error")
     }
   })
+  
+  # Download data without MonthYear/MonthYearDate
+  output$download_data <- downloadHandler(
+    filename = function() {
+      paste0("Monthly_expense_data_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      write.csv(sheet_data()[ , c("Date", "Month", "Category", "Subcategory", "Expense")],
+                file, row.names = FALSE)
+    }
+  )
   
   output$expense_plot <- renderPlotly({
     month_exp <- sheet_data() %>%
