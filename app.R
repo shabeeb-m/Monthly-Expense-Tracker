@@ -1,3 +1,6 @@
+
+
+
 library(shiny)
 library(DT)
 library(dplyr)
@@ -30,6 +33,16 @@ ui <- fluidPage(
       .btn-icon { font-size: 20px; width: 45px; height: 45px; border-radius: 50%; padding:0; }
     "))
   ),
+  tags$script(HTML("
+    Shiny.addCustomMessageHandler('update_total_spend', function(value) {
+      document.getElementById('personal_total_text').innerHTML = value;
+    });
+  ")),
+  tags$script(HTML("
+    Shiny.addCustomMessageHandler('total_home_spend', function(value) {
+      document.getElementById('total_home_text').innerHTML = value;
+    });
+  ")),
   
   titlePanel(div("💰 Monthly Expense Analysis", class = "title-text")),
   
@@ -55,7 +68,35 @@ ui <- fluidPage(
     tabPanel("📂 Sub-Category Expense",
              br(),
              selectInput("month_select_subcat", "Select Month-Year", choices = NULL, width = "100%"),
-             tags$div(style = "overflow-x: auto; width: 100%;", uiOutput("subcategory_plot_ui")))
+             tags$div(style = "overflow-x: auto; width: 100%;", uiOutput("subcategory_plot_ui"))),
+    tabPanel("🏡 Household Expenses",
+             br(),
+             selectInput("month_select_home", "Select Month-Year", choices = NULL, width = "100%"),
+             br(),
+             fluidRow(
+               column(6,
+                      tags$div(style = "font-size:18px; font-weight:bold; margin-bottom:10px;",
+                               HTML("💵 Total Household Spend: <span id='total_home_text'></span>")
+                      )
+               )
+             ),
+             br(),
+             plotlyOutput("home_plot_ui", height = "400px")),
+    tabPanel("👤 Personal Expense",
+             br(),
+             selectInput("month_select_personal", "Select Month-Year", choices = NULL, width = "100%"),
+             br(),
+             fluidRow(
+               column(6,
+                      tags$div(style = "font-size:18px; font-weight:bold; margin-bottom:10px;",
+                               HTML("💵 Total Personal Spend: <span id='personal_total_text'></span>")
+                      )
+               )
+             ),
+             br(),
+             plotlyOutput("personal_plot", height = "400px")),
+    tabPanel("💳 Loan / EMI", br(), DTOutput("emi_data"))
+    
   )
 )
 
@@ -93,12 +134,28 @@ server <- function(input, output, session) {
     
     updateSelectInput(session, "month_select_cat", choices = months, selected = selected_month)
     updateSelectInput(session, "month_select_subcat", choices = months, selected = selected_month)
+    updateSelectInput(session, "month_select_home", choices = months, selected = selected_month)
+    updateSelectInput(session, "month_select_personal", choices = months, selected = selected_month)
   })
   
   # Render DataTable
   output$sheet_data <- renderDT({
     datatable(sheet_data() %>%
                 select(Date, Month, Category, `Sub-Category`, Expense),
+              options = list(pageLength = 8, scrollX = TRUE),
+              class = "cell-border stripe hover compact")
+  })
+  
+  output$emi_data <- renderDT({
+    datatable(sheet_data() %>% 
+                filter(`Sub-Category` %in% c("Skillovilla EMI","Dental","Inverter")) %>% 
+                group_by(`Sub-Category`) %>% 
+                summarise(Paid = sum(Expense, na.rm = TRUE), .groups = "drop") %>% 
+                mutate(Due = c(23000, 20000, 40539),
+                       Item = `Sub-Category`,
+                       Remaining = Due - Paid) %>% 
+                select(Item, Due, Paid, Remaining) %>% 
+                arrange(desc(Due)),
               options = list(pageLength = 8, scrollX = TRUE),
               class = "cell-border stripe hover compact")
   })
@@ -260,6 +317,73 @@ server <- function(input, output, session) {
     
     p %>% ggplotly(height = plot_height, tooltip = "text")
   })
+  
+  #home expenses
+  output$home_plot_ui <- renderPlotly({
+    req(input$month_select_home)
+    home_exp <- sheet_data() %>%
+      filter(MonthYear == input$month_select_home,
+             Category %in% c("To Home","Meat & Seafood","Groceries","Utility")) %>%
+      group_by(Category) %>%
+      summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(TotalExpense))
+    
+    # Calculate total spend
+    home_spend <- sum(home_exp$TotalExpense)
+    
+    # Inject the value in bold using JavaScript/HTML
+    session$sendCustomMessage("total_home_spend",
+                              paste0("<b style='color:#1b5e20;'>₹ ",
+                                     format(home_spend, big.mark = ","), "</b>"))
+    
+    # Plot
+    home_plot <- ggplot(home_exp, aes(x = reorder(Category, TotalExpense),
+                                      y = TotalExpense,
+                                      text = paste("Category:", Category,
+                                                   "<br>Total:", TotalExpense))) +
+      geom_col(fill = "#009E73") +
+      coord_flip() +
+      theme_minimal(base_size = 14) +
+      theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+    
+    ggplotly(home_plot, tooltip = "text")
+  })
+  
+  # Personal plot
+  output$personal_plot <- renderPlotly({
+    req(input$month_select_personal)
+    
+    personal_exp <- sheet_data() %>%
+      filter(MonthYear == input$month_select_personal,
+             Category %in% c("Outside Food","Personal","Transport","Sweets","Leisure")) %>%
+      group_by(Category) %>%
+      summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(TotalExpense))
+    
+    # Calculate total spend
+    Personal_spend <- sum(personal_exp$TotalExpense)
+    
+    # Inject the value in bold using JavaScript/HTML
+    session$sendCustomMessage("update_total_spend",
+                              paste0("<b style='color:#1b5e20;'>₹ ",
+                                     format(Personal_spend, big.mark = ","), "</b>"))
+    
+    # Plot
+    personal_plot <- ggplot(personal_exp, aes(x = reorder(Category, TotalExpense),
+                                              y = TotalExpense,
+                                              text = paste("Category:", Category,
+                                                           "<br>Total:", TotalExpense))) +
+      geom_col(fill = "#009E73") +
+      coord_flip() +
+      theme_minimal(base_size = 14) +
+      theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+    
+    ggplotly(personal_plot, tooltip = "text")
+  })
+  
 }
 
 shinyApp(ui, server)
+
