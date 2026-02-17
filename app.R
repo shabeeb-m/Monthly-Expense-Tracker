@@ -1,7 +1,6 @@
 
-
-
 library(shiny)
+library(shinydashboard)
 library(DT)
 library(dplyr)
 library(ggplot2)
@@ -9,94 +8,122 @@ library(plotly)
 library(lubridate)
 library(googlesheets4)
 
-# Authenticate with your Google account
+# Authenticate Google Sheets
 gs4_auth(path = "shiny-app-474907-7b95793f24b7.json") 
 sheet_url <- "https://docs.google.com/spreadsheets/d/1hhMqjUvVHiDPGZ-Xpc9gtJi_F_2oQraD68kFSng2kc8/edit#gid=75237655"
-sheet_tab <- "Daily Expenses"  # <-- exact tab name
+sheet_tab <- "Daily Expenses"
 
 default_categories <- c(
   "Outside Food", "Personal", "Health", "To Home", "Meat & Seafood",
-  "Groceries", "Leisure", "Finance", "Transport", "Sweets", "Utility"
+  "Groceries", "Leisure", "Finance", "Transport","Utility","Skin Care"
 )
 
-ui <- fluidPage(
-  tags$head(
-    tags$meta(name = "viewport", content = "width=device-width, initial-scale=1"),
-    tags$style(HTML("
-      body { font-size: 15px; padding: 8px; }
-      .plotly { height: 400px !important; }
-      .dataTables_wrapper { font-size: 13px; }
-      .shiny-input-container { width: 100% !important; }
-      .selectize-input { font-size: 14px; }
-      .title-text { font-size: 22px; font-weight: bold; }
-      .btn-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
-      .btn-icon { font-size: 20px; width: 45px; height: 45px; border-radius: 50%; padding:0; }
-    "))
-  ),
-  tags$script(HTML("
-    Shiny.addCustomMessageHandler('update_total_spend', function(value) {
-      document.getElementById('personal_total_text').innerHTML = value;
-    });
-  ")),
-  tags$script(HTML("
-    Shiny.addCustomMessageHandler('total_home_spend', function(value) {
-      document.getElementById('total_home_text').innerHTML = value;
-    });
-  ")),
+ui <- dashboardPage(
+  skin = "green",
+  dashboardHeader(title = "💰 Expense Analysis"),
   
-  titlePanel(div("💰 Monthly Expense Analysis", class = "title-text")),
-  
-  fluidRow(
-    column(12,
-           div(class = "btn-row",
-               actionButton("open_modal", HTML("<b style='font-size:20px;'>+</b>"), class = "btn-success btn-icon"),
-               actionButton("delete_mode_btn", HTML("🗑"), class = "btn-danger btn-icon"),
-               downloadButton("download_data", label = NULL, class = "btn-primary btn-icon", icon = icon("download"))
-           )
+  dashboardSidebar(
+    sidebarMenu(
+      id = "tabs",
+      menuItem("Data Table", tabName = "data_table", icon = icon("table")),
+      menuItem("Monthly Expense", tabName = "monthly_exp", icon = icon("calendar")),
+      menuItem("Category Expense", tabName = "category_exp", icon = icon("boxes")),
+      menuItem("Sub-Category Expense", tabName = "subcat_exp", icon = icon("folder")),
+      menuItem("Household Expenses", tabName = "home_exp", icon = icon("home")),
+      menuItem("Personal Expense", tabName = "personal_exp", icon = icon("user")),
+      menuItem("Loan / EMI", tabName = "emi_exp", icon = icon("credit-card"))
     )
   ),
   
-  tabsetPanel(
-    id = "tabs",
-    type = "tabs",
-    tabPanel("📋 Data Table", br(), DTOutput("sheet_data")),
-    tabPanel("📊 Monthly Expense", br(), plotlyOutput("expense_plot", height = "400px")),
-    tabPanel("📦 Category Expense",
-             br(),
-             selectInput("month_select_cat", "Select Month-Year", choices = NULL, width = "100%"),
-             plotlyOutput("category_plot", height = "400px")),
-    tabPanel("📂 Sub-Category Expense",
-             br(),
-             selectInput("month_select_subcat", "Select Month-Year", choices = NULL, width = "100%"),
-             tags$div(style = "overflow-x: auto; width: 100%;", uiOutput("subcategory_plot_ui"))),
-    tabPanel("🏡 Household Expenses",
-             br(),
-             selectInput("month_select_home", "Select Month-Year", choices = NULL, width = "100%"),
-             br(),
-             fluidRow(
-               column(6,
-                      tags$div(style = "font-size:18px; font-weight:bold; margin-bottom:10px;",
-                               HTML("💵 Total Household Spend: <span id='total_home_text'></span>")
-                      )
-               )
-             ),
-             br(),
-             plotlyOutput("home_plot_ui", height = "400px")),
-    tabPanel("👤 Personal Expense",
-             br(),
-             selectInput("month_select_personal", "Select Month-Year", choices = NULL, width = "100%"),
-             br(),
-             fluidRow(
-               column(6,
-                      tags$div(style = "font-size:18px; font-weight:bold; margin-bottom:10px;",
-                               HTML("💵 Total Personal Spend: <span id='personal_total_text'></span>")
-                      )
-               )
-             ),
-             br(),
-             plotlyOutput("personal_plot", height = "400px")),
-    tabPanel("💳 Loan / EMI", br(), DTOutput("emi_data"))
+  dashboardBody(
+    tags$head(
+      tags$style(HTML("
+        .content-wrapper { padding: 15px; }
+        .btn-icon { font-size: 20px; width: 45px; height: 45px; border-radius: 50%; padding:0; margin-right:5px; }
+      ")),
+      tags$script(HTML("
+        Shiny.addCustomMessageHandler('update_total_spend', function(value) {
+          document.getElementById('personal_total_text').innerHTML = value;
+        });
+        Shiny.addCustomMessageHandler('total_home_spend', function(value) {
+          document.getElementById('total_home_text').innerHTML = value;
+        });
+        Shiny.addCustomMessageHandler('todays_spend', function(value) {
+          document.getElementById('todays_spend_text').innerHTML = value;
+        });
+        Shiny.addCustomMessageHandler('pending_emi', function(value) {
+          document.getElementById('pending_emi_text').innerHTML = value;
+        });
+        Shiny.addCustomMessageHandler('update_balance', function(value) {
+          document.getElementById('balance_text').innerHTML = value;
+        });
+      "))
+    ),
     
+    tabItems(
+      # ---------------- Data Table ----------------
+      tabItem(tabName = "data_table",
+              fluidRow(
+                column(12,
+                       div(style="display:flex; gap:10px; margin-bottom:10px;",
+                           actionButton("open_modal", HTML("<b style='font-size:20px;'>+</b>"), class="btn-success btn-icon"),
+                           actionButton("delete_mode_btn", HTML("🗑"), class="btn-danger btn-icon"),
+                           downloadButton("download_data", label=NULL, class="btn-primary btn-icon", icon = icon("download"))
+                       )
+                )
+              ),
+              tags$div(style="font-size:18px; font-weight:bold; margin-bottom:10px;",
+                       HTML("💵 Today’s Expenses: <span id='todays_spend_text'></span>")
+              ),
+              tags$div(style="font-size:18px; font-weight:bold; margin-bottom:10px;",
+                       HTML("💵 Balance Available: <span id='balance_text'></span>")
+              ),
+              DTOutput("sheet_data")
+      ),
+      
+      # ---------------- Monthly Expense ----------------
+      tabItem(tabName = "monthly_exp",
+              plotlyOutput("expense_plot", height = "400px")
+      ),
+      
+      # ---------------- Category Expense ----------------
+      tabItem(tabName = "category_exp",
+              selectInput("month_select_cat", "Select Month-Year", choices = NULL, width = "100%"),
+              plotlyOutput("category_plot", height = "400px")
+      ),
+      
+      # ---------------- Sub-Category Expense ----------------
+      tabItem(tabName = "subcat_exp",
+              selectInput("month_select_subcat", "Select Month-Year", choices = NULL, width = "100%"),
+              plotlyOutput("subcategory_plot", height = "400px")
+      ),
+      
+      # ---------------- Household Expenses ----------------
+      tabItem(tabName = "home_exp",
+              selectInput("month_select_home", "Select Month-Year", choices = NULL, width = "100%"),
+              tags$div(style="font-size:18px; font-weight:bold; margin-bottom:10px;",
+                       HTML("💵 Total Household Spend: <span id='total_home_text'></span>")
+              ),
+              plotlyOutput("home_plot_ui", height = "400px")
+      ),
+      
+      # ---------------- Personal Expenses ----------------
+      tabItem(tabName = "personal_exp",
+              selectInput("month_select_personal", "Select Month-Year", choices = NULL, width = "100%"),
+              tags$div(style="font-size:18px; font-weight:bold; margin-bottom:10px;",
+                       HTML("💵 Total Personal Spend: <span id='personal_total_text'></span>")
+              ),
+              plotlyOutput("personal_plot", height = "400px")
+      ),
+      
+      # ---------------- Loan / EMI ----------------
+      tabItem(tabName = "emi_exp",
+              tags$div(style="font-size:18px; font-weight:bold; margin-bottom:10px;",
+                       HTML("💵 Pending EMI: <span id='pending_emi_text'></span>")
+              ),
+              DTOutput("emi_data")
+      )
+    )
   )
 )
 
@@ -108,7 +135,6 @@ server <- function(input, output, session) {
   sheet_data <- reactive({
     data_trigger()
     df <- read_sheet(sheet_url, sheet = sheet_tab)
-    # Create MonthYear and MonthYearDate only in code
     df <- df %>%
       mutate(
         Date = as.Date(Date),
@@ -138,29 +164,57 @@ server <- function(input, output, session) {
     updateSelectInput(session, "month_select_personal", choices = months, selected = selected_month)
   })
   
-  # Render DataTable
+  # ---------------- Data Table ----------------
   output$sheet_data <- renderDT({
+    todays_spend <- sheet_data() %>% 
+      filter(Date == Sys.Date()) %>% 
+      summarise(Total_Expense = sum(Expense, na.rm = TRUE)) %>% 
+      pull(Total_Expense)
+    
+    balance_amount <- sheet_data() %>% 
+      filter(Month == format(Sys.Date(), "%b")) %>% 
+      summarise(Total_Expense = sum(Expense, na.rm = TRUE)) %>% 
+      mutate(Balance = 20000 - Total_Expense) %>% 
+      pull(Balance)
+    
+    session$sendCustomMessage("todays_spend",
+                              paste0("<b style='color:#1b5e20;'>₹ ",
+                                     format(todays_spend, big.mark=","), "</b>"))
+    
+    session$sendCustomMessage("update_balance",
+                              paste0("<b style='color:#1b5e20;'>₹ ",
+                                     format(balance_amount, big.mark=","), "</b>"))
+    
     datatable(sheet_data() %>%
                 select(Date, Month, Category, `Sub-Category`, Expense),
               options = list(pageLength = 8, scrollX = TRUE),
               class = "cell-border stripe hover compact")
   })
   
+  # ---------------- EMI Data ----------------
   output$emi_data <- renderDT({
-    datatable(sheet_data() %>% 
-                filter(`Sub-Category` %in% c("Skillovilla EMI","Dental","Inverter")) %>% 
-                group_by(`Sub-Category`) %>% 
-                summarise(Paid = sum(Expense, na.rm = TRUE), .groups = "drop") %>% 
-                mutate(Due = c(23000, 20000, 40539),
-                       Item = `Sub-Category`,
-                       Remaining = Due - Paid) %>% 
-                select(Item, Due, Paid, Remaining) %>% 
-                arrange(desc(Due)),
+    emi_df <- sheet_data() %>% 
+      filter(`Sub-Category` %in% c("Skillovilla EMI","Dental","Inverter")) %>% 
+      group_by(`Sub-Category`) %>% 
+      summarise(Paid = sum(Expense, na.rm = TRUE), .groups = "drop") %>% 
+      mutate(Due = c(23000, 10000, 41262),
+             Remaining = Due - Paid,
+             Item = `Sub-Category`) %>% 
+      select(Item, Due, Paid, Remaining) %>% 
+      arrange(desc(Due))
+    
+    # Send Pending EMI total to UI
+    pending_total <- sum(emi_df$Remaining, na.rm = TRUE)
+    session$sendCustomMessage("pending_emi",
+                              paste0("<b style='color:#1b5e20;'>₹ ",
+                                     format(pending_total, big.mark=","), "</b>"))
+    
+    datatable(emi_df,
               options = list(pageLength = 8, scrollX = TRUE),
               class = "cell-border stripe hover compact")
   })
   
-  # Add new data modal
+  # ---------------- Add Modal ----------------
   observeEvent(input$open_modal, {
     showModal(modalDialog(
       title = "Add New Data",
@@ -177,13 +231,11 @@ server <- function(input, output, session) {
     ))
   })
   
-  # Add data to Google Sheet
   observeEvent(input$add_btn_modal, {
     new_category <- input$category
     if (!(new_category %in% categories())) {
       categories(c(categories(), new_category))
     }
-    
     new_row <- data.frame(
       Date = as.Date(input$date),
       Month = format(as.Date(input$date), "%b"),
@@ -192,14 +244,13 @@ server <- function(input, output, session) {
       Expense = as.numeric(input$expense),
       stringsAsFactors = FALSE
     )
-    
     sheet_append(sheet_url, new_row, sheet = sheet_tab)
     removeModal()
     data_trigger(data_trigger() + 1)
     showNotification("✅ Data added successfully!", type = "message")
   })
   
-  # Delete mode modal
+  # ---------------- Delete Data ----------------
   observeEvent(input$delete_mode_btn, {
     showModal(modalDialog(
       title = "Select Data to Delete",
@@ -218,14 +269,12 @@ server <- function(input, output, session) {
               options = list(pageLength = 8, scrollX = TRUE))
   })
   
-  # Delete selected rows from Google Sheet
   observeEvent(input$confirm_delete_btn, {
     selected <- input$delete_table_rows_selected
     if (length(selected) > 0) {
       all_data <- sheet_data() %>%
-        select(Date, Month, Category, `Sub-Category`, Expense)  # Keep only original columns
+        select(Date, Month, Category, `Sub-Category`, Expense)
       all_data <- all_data[-selected, ]
-      # Write back to correct tab
       sheet_write(all_data, ss = sheet_url, sheet = sheet_tab)
       data_trigger(data_trigger() + 1)
       removeModal()
@@ -235,7 +284,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Download CSV
+  # ---------------- Download ----------------
   output$download_data <- downloadHandler(
     filename = function() {
       paste0("Monthly_expense_data_", Sys.Date(), ".csv")
@@ -246,7 +295,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # Monthly expense plot
+  # ---------------- Monthly Plot ----------------
   output$expense_plot <- renderPlotly({
     month_exp <- sheet_data() %>%
       group_by(MonthYear, MonthYearDate) %>%
@@ -265,10 +314,9 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip = "text")
   })
   
-  # Category plot
+  # ---------------- Category Plot ----------------
   output$category_plot <- renderPlotly({
     req(input$month_select_cat)
-    
     cat_exp <- sheet_data() %>%
       filter(MonthYear == input$month_select_cat) %>%
       group_by(Category) %>%
@@ -286,21 +334,9 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip = "text")
   })
   
-  # Subcategory plot UI
-  output$subcategory_plot_ui <- renderUI({
-    tags$div(style = "min-width: 900px;", plotlyOutput("subcategory_plot"))
-  })
-  
-  # Subcategory plot
+  # ---------------- Subcategory Plot ----------------
   output$subcategory_plot <- renderPlotly({
     req(input$month_select_subcat)
-    
-    subcat_count <- sheet_data() %>%
-      filter(MonthYear == input$month_select_subcat) %>%
-      distinct(`Sub-Category`) %>%
-      nrow()
-    plot_height <- max(400, subcat_count * 25)
-    
     subcat_exp <- sheet_data() %>%
       filter(MonthYear == input$month_select_subcat) %>%
       group_by(`Sub-Category`) %>%
@@ -309,16 +345,16 @@ server <- function(input, output, session) {
     
     p <- ggplot(subcat_exp, aes(x = TotalExpense, 
                                 y = reorder(`Sub-Category`, TotalExpense),
-                                text = paste("Sub-Category:", `Sub-Category`, "<br>Total Expense:", TotalExpense))) +
+                                text = paste("Sub-Category:", `Sub-Category`, "<br>Total:", TotalExpense))) +
       geom_col(fill = "#2c7fb8") +
       theme_minimal() +
       theme(axis.title.x = element_blank(),
             axis.title.y = element_blank())
     
-    p %>% ggplotly(height = plot_height, tooltip = "text")
+    ggplotly(p, height = max(400, nrow(subcat_exp)*25), tooltip = "text")
   })
   
-  #home expenses
+  # ---------------- Household Plot ----------------
   output$home_plot_ui <- renderPlotly({
     req(input$month_select_home)
     home_exp <- sheet_data() %>%
@@ -328,62 +364,50 @@ server <- function(input, output, session) {
       summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
       arrange(desc(TotalExpense))
     
-    # Calculate total spend
     home_spend <- sum(home_exp$TotalExpense)
-    
-    # Inject the value in bold using JavaScript/HTML
     session$sendCustomMessage("total_home_spend",
                               paste0("<b style='color:#1b5e20;'>₹ ",
-                                     format(home_spend, big.mark = ","), "</b>"))
+                                     format(home_spend, big.mark=","), "</b>"))
     
-    # Plot
-    home_plot <- ggplot(home_exp, aes(x = reorder(Category, TotalExpense),
-                                      y = TotalExpense,
-                                      text = paste("Category:", Category,
-                                                   "<br>Total:", TotalExpense))) +
+    p <- ggplot(home_exp, aes(x = reorder(Category, TotalExpense),
+                              y = TotalExpense,
+                              text = paste("Category:", Category, "<br>Total:", TotalExpense))) +
       geom_col(fill = "#009E73") +
       coord_flip() +
       theme_minimal(base_size = 14) +
       theme(axis.title.x = element_blank(),
             axis.title.y = element_blank())
     
-    ggplotly(home_plot, tooltip = "text")
+    ggplotly(p, tooltip = "text")
   })
   
-  # Personal plot
+  # ---------------- Personal Plot ----------------
   output$personal_plot <- renderPlotly({
     req(input$month_select_personal)
-    
     personal_exp <- sheet_data() %>%
       filter(MonthYear == input$month_select_personal,
-             Category %in% c("Outside Food","Personal","Transport","Sweets","Leisure")) %>%
+             Category %in% c("Outside Food","Personal","Transport","Sweets","Leisure","Skin Care")) %>%
       group_by(Category) %>%
       summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
       arrange(desc(TotalExpense))
     
-    # Calculate total spend
     Personal_spend <- sum(personal_exp$TotalExpense)
-    
-    # Inject the value in bold using JavaScript/HTML
     session$sendCustomMessage("update_total_spend",
                               paste0("<b style='color:#1b5e20;'>₹ ",
-                                     format(Personal_spend, big.mark = ","), "</b>"))
+                                     format(Personal_spend, big.mark=","), "</b>"))
     
-    # Plot
-    personal_plot <- ggplot(personal_exp, aes(x = reorder(Category, TotalExpense),
-                                              y = TotalExpense,
-                                              text = paste("Category:", Category,
-                                                           "<br>Total:", TotalExpense))) +
+    p <- ggplot(personal_exp, aes(x = reorder(Category, TotalExpense),
+                                  y = TotalExpense,
+                                  text = paste("Category:", Category, "<br>Total:", TotalExpense))) +
       geom_col(fill = "#009E73") +
       coord_flip() +
       theme_minimal(base_size = 14) +
       theme(axis.title.x = element_blank(),
             axis.title.y = element_blank())
     
-    ggplotly(personal_plot, tooltip = "text")
+    ggplotly(p, tooltip = "text")
   })
   
 }
 
 shinyApp(ui, server)
-
