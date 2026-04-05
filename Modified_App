@@ -1,0 +1,1083 @@
+library(shiny)
+library(plotly)
+library(googlesheets4)
+library(dplyr)
+library(DT)
+
+# 🔐 Google Auth
+gs4_auth(path = "shiny-app-474907-7b95793f24b7.json")
+
+sheet_url <- "https://docs.google.com/spreadsheets/d/1hhMqjUvVHiDPGZ-Xpc9gtJi_F_2oQraD68kFSng2kc8/edit#gid=75237655"
+sheet_tab <- "Daily Expenses"
+
+budget_df <- data.frame(
+  Category = c("Finance","Outside Food","Personal","Health","To Home",
+               "Meat & Seafood","Groceries","Leisure","Transport","Utility","Skin Care"),
+  Budget = c(2000,2000,2000,1500,1000,2500,3000,500,1500,3500,1500)
+)
+
+ui <- fluidPage(
+  
+  tags$head(tags$style(HTML("
+    body {background:#f1f5f9; font-family:sans-serif;}
+    .container {max-width:500px; margin:auto;}
+
+    .header {
+      background:#16a34a; color:white; padding:15px;
+      border-radius:0 0 20px 20px; margin-bottom:10px;
+    }
+
+    .card {
+      background:white; padding:12px; border-radius:15px;
+      margin-bottom:10px; box-shadow:0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .grid {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+
+    .section-header {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+    }
+
+    .view-btn {
+      background:none; border:none;
+      color:#16a34a; font-size:13px;
+    }
+
+    .txn {
+      display:flex;
+      justify-content:space-between;
+      margin-bottom:8px;
+    }
+
+    .bottom-nav-wrapper {
+      position:fixed; bottom:0; left:0; right:0;
+      display:flex; justify-content:center;
+    }
+
+    .bottom-nav {
+      width:100%; max-width:500px;
+      background:white; display:flex;
+      justify-content:space-around;
+      padding:10px;
+      border-top:1px solid #ddd;
+    }
+
+    .nav-btn {
+      background:none; border:none;
+      font-size:12px;
+    }
+    
+    .dataTables_wrapper {
+      font-size: 11px;
+    }
+    
+    table.dataTable td {
+      padding: 4px !important;
+    }
+    
+    table.dataTable th {
+      padding: 4px !important;
+      font-size: 11px;
+}
+
+  "))),
+  
+  uiOutput("screen"),
+  
+  div(class="bottom-nav-wrapper",
+      div(class="bottom-nav",
+          actionButton("nav_home", NULL, icon=icon("home"), class="nav-btn"),
+          actionButton("nav_add", NULL, icon=icon("plus"), class="nav-btn"),
+          actionButton("nav_analysis", NULL, icon=icon("chart-pie"), class="nav-btn"),
+          actionButton("nav_emi", NULL, icon=icon("credit-card"), class="nav-btn")
+      )
+  )
+)
+
+server <- function(input, output, session){
+  
+  current_tab <- reactiveVal("home")
+  refresh_data <- reactiveVal(0)
+  
+  observeEvent(input$nav_home, { current_tab("home") })
+  observeEvent(input$nav_analysis, { current_tab("analysis") })
+  observeEvent(input$nav_emi, { current_tab("emi") })
+  observeEvent(input$view_budget, { current_tab("budget") })
+  observeEvent(input$view_txn, { current_tab("transactions") })
+  observeEvent(input$back, { current_tab("home") })
+  
+  # 📥 READ SHEET
+  sheet_data <- reactive({
+    refresh_data()
+    
+    df <- read_sheet(sheet_url, sheet = sheet_tab)
+    
+    df <- df %>%
+      mutate(
+        Date = as.Date(Date),
+        Expense = as.numeric(Expense)
+      ) %>%
+      filter(!is.na(Date))
+    
+    df$MonthYear <- format(df$Date, "%b %Y")
+    df$MonthYearDate <- as.Date(format(df$Date, "%Y-%m-01"))
+    
+    df
+  })
+  
+  # ➕ ADD MODAL
+  observeEvent(input$nav_add, {
+    showModal(modalDialog(
+      title = "Add Expense",
+      
+      dateInput("date", "Date", value = Sys.Date()),
+      selectizeInput("cat","Category",
+                     choices=budget_df$Category,
+                     options=list(create=TRUE)),
+      textInput("sub","Sub Category"),
+      numericInput("amt","Amount", value = NA, min=0),
+      
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("save_modal","Save", class="btn-success")
+      )
+    ))
+  })
+  
+  # 💾 SAVE
+  observeEvent(input$save_modal, {
+    
+    req(input$date, input$cat, input$amt)
+    
+    if(is.na(input$amt) || input$amt <= 0){
+      showNotification("Enter valid amount", type="error")
+      return()
+    }
+    
+    new_row <- data.frame(
+      Date = as.Date(input$date),
+      Month = format(as.Date(input$date), "%b"),
+      Category = input$cat,
+      `Sub-Category` = input$sub,
+      Expense = input$amt,
+      stringsAsFactors = FALSE
+    )
+    
+    sheet_append(sheet_url, new_row, sheet = sheet_tab)
+    
+    removeModal()
+    showNotification("Saved ✅")
+    refresh_data(refresh_data() + 1)
+  })
+  
+  # 🗑️ DELETE MODAL OPEN
+  observeEvent(input$delete_open, {
+    showModal(modalDialog(
+      title = "Delete Expenses",
+      DTOutput("delete_table"),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_delete", "Delete Selected",
+                     style="background:red;color:white;")
+      ),
+      size = "l"
+    ))
+  })
+  
+  today_spend <- reactive({
+    
+    df <- sheet_data()
+    
+    total_today <- df %>%
+      filter(Date == Sys.Date()) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    total_today
+  })
+  
+  # DELETE TABLE
+  output$delete_table <- renderDT({
+    datatable(sheet_data(),
+              selection="multiple",
+              options=list(pageLength=8))
+  })
+  
+  # SAFE DELETE
+  observeEvent(input$confirm_delete, {
+    
+    selected <- input$delete_table_rows_selected
+    
+    if(length(selected)==0){
+      showNotification("No rows selected", type="error")
+      return()
+    }
+    
+    df <- sheet_data()
+    df <- df[-selected, ]
+    
+    sheet_write(df, ss = sheet_url, sheet = sheet_tab)
+    
+    removeModal()
+    showNotification("Deleted Successfully ✅")
+    
+    refresh_data(refresh_data() + 1)
+  })
+  
+  # 📊 STATS
+  stats_data <- reactive({
+    
+    df <- sheet_data()
+    df <- df %>% mutate(MonthYear = format(Date,"%Y-%m"))
+    
+    current_month <- format(Sys.Date(),"%Y-%m")
+    df_current <- df %>% filter(MonthYear==current_month)
+    
+    total <- sum(df_current$Expense)
+    balance <- 20000 - total
+    
+    highest <- df_current %>%
+      group_by(Category) %>%
+      summarise(total=sum(Expense)) %>%
+      arrange(desc(total)) %>%
+      slice(1)
+    
+    highest_cat <- if(nrow(highest)==0) "N/A" else highest$Category
+    highest_amt <- if(nrow(highest)==0) 0 else highest$total
+    
+    today_day <- as.numeric(format(Sys.Date(),"%d"))
+    
+    emi_paid <- df_current %>%
+      filter(Category=="Finance", `Sub-Category`=="Inverter") %>%
+      nrow()>0
+    
+    if(emi_paid){
+      emi_status <- "EMI Paid ✅"; emi_sub <- ""
+    } else if(today_day < 5){
+      emi_status <- "EMI Due Soon"
+      emi_sub <- paste0(5-today_day," days left")
+    } else {
+      emi_status <- "EMI Overdue ❌"; emi_sub <- "Pay immediately"
+    }
+    
+    list(total=total, balance=balance,
+         highest_cat=highest_cat, highest_amt=highest_amt,
+         emi_status=emi_status, emi_sub=emi_sub)
+  })
+  
+  # 📊 BUDGET
+  budget_data <- reactive({
+    df <- sheet_data()
+    current_month <- format(Sys.Date(),"%Y-%m")
+    
+    df_current <- df %>% filter(format(Date,"%Y-%m")==current_month)
+    
+    actuals <- df_current %>%
+      group_by(Category) %>%
+      summarise(Spent=sum(Expense))
+    
+    merge(budget_df, actuals, by="Category", all.x=TRUE) %>%
+      mutate(Spent=ifelse(is.na(Spent),0,Spent))
+  })
+  
+  # 📊 RECENT
+  recent_txn <- reactive({
+    df <- sheet_data() %>% arrange(desc(Date))
+    latest_dates <- head(unique(df$Date),2)
+    df %>% filter(Date %in% latest_dates)
+  })
+  
+  output$screen <- renderUI({
+    
+    if(current_tab()=="home"){
+      
+      s <- stats_data()
+      bd <- budget_data()
+      tx <- recent_txn()
+      
+      div(class="container",
+          div(class="header",
+              div(style="display:flex;justify-content:space-between;align-items:center;",
+                  h4("Expense Analysis"),
+                  actionButton("delete_open","🗑️",
+                               style="background:white;color:red;border:none;font-size:18px;")
+              )
+          ),
+          
+          div(class="grid",
+              
+              div(class="card",
+                  style="background:#dcfce7;",
+                  strong(paste0("₹ ", today_spend())),
+                  br(),
+                  "Today"
+              ),
+              
+              div(class="card",
+                  style="background:#e0f2fe;",
+                  strong(paste0("₹ ", s$total)),
+                  br(),
+                  "Total"
+              ),
+              
+              div(class="card",
+                  style="background:#f3e8ff;",
+                  strong(paste0("₹ ", s$balance)),
+                  br(),
+                  "Balance"
+              ),
+              
+              div(class="card",
+                  style="background:#fff7ed;",
+                  strong(s$highest_cat),
+                  br(),
+                  paste0("₹ ", s$highest_amt)
+              )
+          ),
+          div(class="card",
+              style="margin-top:10px; background:#fef9c3;",
+              strong(s$emi_status),
+              br(),
+              s$emi_sub
+          ),
+          
+          div(class="card",
+              div(class="section-header",
+                  strong("Budget vs Actual"),
+                  actionButton("view_budget","View All >",class="view-btn")),
+              lapply(1:min(3, nrow(bd)), function(i){
+                
+                percent <- ifelse(bd$Budget[i] == 0, 0,
+                                  round((bd$Spent[i] / bd$Budget[i]) * 100))
+                
+                bar_color <- if(percent < 70){
+                  "#16a34a"   # green
+                } else if(percent < 100){
+                  "#f59e0b"   # orange
+                } else {
+                  "#dc2626"   # red
+                }
+                
+                div(
+                  style="margin-bottom:10px;",
+                  
+                  # Category + value
+                  div(style="display:flex;justify-content:space-between;font-size:13px;",
+                      span(strong(bd$Category[i])),
+                      span(paste0("₹ ", bd$Spent[i], " / ₹ ", bd$Budget[i]))
+                  ),
+                  
+                  # Progress bar
+                  div(style="background:#e5e7eb;border-radius:10px;height:10px;",
+                      div(style=paste0(
+                        "width:", percent, "%;",
+                        "background:", bar_color, ";",
+                        "height:10px;border-radius:10px;"
+                      ))
+                  )
+                )
+              })
+          ),
+          
+          div(class="card",
+              div(class="section-header",
+                  strong("Recent Transactions"),
+                  actionButton("view_txn","More >",class="view-btn")),
+              lapply(1:3,function(i){
+                div(class="txn",
+                    span(paste(tx$Category[i],"₹",tx$Expense[i])),
+                    span(format(tx$Date[i],"%b %d"))
+                )
+              })
+          )
+      )
+    }
+    
+    else if(current_tab()=="analysis"){
+      
+      df <- sheet_data()
+      months <- unique(format(df$Date, "%b %Y"))
+      
+      div(class="container",
+          div(class="header", h4("Analysis")),
+          
+          div(class="card",
+              fluidRow(
+                column(6,
+                       div(style="font-size:12px;",
+                           selectInput("month_select", "Month",
+                                       choices = months,
+                                       selected = tail(months, 1),
+                                       width = "100%")
+                       )
+                ),
+                column(6,
+                       div(style="font-size:12px;",
+                           selectInput("analysis_type", "Analysis",
+                                       choices = c(
+                                         "Category Expense",
+                                         "Sub-Category Expense",
+                                         "Household Expense",
+                                         "Personal Expense"
+                                       ),
+                                       selected = "Category Expense",
+                                       width = "100%")
+                       )
+                )
+              )
+          ),
+          
+          uiOutput("analysis_content")
+      )
+    }
+    
+    else if(current_tab()=="emi"){
+      
+      div(class="container",
+          div(class="header", h4("EMI Tracker")),
+          
+          div(class="card",
+              strong("Total Pending EMI"),
+              br(),
+              textOutput("emi_pending")
+          ),
+          
+          div(class="card",
+              DTOutput("emi_table")
+          )
+      )
+    }
+    
+    else if(current_tab()=="budget"){
+      
+      bd <- budget_data() %>%
+        mutate(Percent = ifelse(Budget == 0, 0, (Spent / Budget) * 100)) %>%
+        arrange(desc(Percent))
+      
+      div(class="container",
+          
+          div(class="header",
+              actionButton("back","< Back"),
+              h4("Full Budget")
+          ),
+          
+          # 🔴 ALERT
+          if(nrow(bd %>% filter(Percent > 100)) > 0){
+            div(class="card",
+                style="background:#fee2e2;color:#991b1b;",
+                strong("⚠ Over Budget Alert"),
+                br(),
+                paste(bd %>% 
+                        filter(Percent > 100) %>% 
+                        pull(Category),
+                      collapse=", ")
+            )
+          },
+          
+          # 📊 LIST
+          lapply(1:nrow(bd), function(i){
+            
+            percent <- round(bd$Percent[i])
+            
+            bar_color <- if(percent < 70){
+              "#16a34a"
+            } else if(percent < 100){
+              "#f59e0b"
+            } else {
+              "#dc2626"
+            }
+            
+            div(class="card",
+                
+                div(style="display:flex;justify-content:space-between;",
+                    span(strong(bd$Category[i])),
+                    span(paste0("₹ ", bd$Spent[i], " / ₹ ", bd$Budget[i]))
+                ),
+                
+                br(),
+                
+                div(style="background:#e5e7eb;border-radius:10px;height:12px;",
+                    div(style=paste0(
+                      "width:", percent, "%;",
+                      "background:", bar_color, ";",
+                      "height:12px;border-radius:10px;text-align:right;color:white;font-size:10px;padding-right:5px;"
+                    ),
+                    paste0(percent, "%")
+                    )
+                )
+            )
+          })
+      )
+    }
+    
+    else if(current_tab()=="transactions"){
+      tx <- recent_txn()
+      div(class="container",
+          div(class="header", actionButton("back","< Back"), h4("All Transactions")),
+          actionButton("delete_open","🗑️ Delete Expense",
+                       style="background:red;color:white;width:100%;margin-bottom:10px;"),
+          lapply(1:nrow(tx),function(i){
+            div(class="card",
+                paste(tx$Category[i],"-",tx$`Sub-Category`[i]),
+                br(),paste0("₹ ",tx$Expense[i]))
+          })
+      )
+    }
+  })
+  
+  # output$pie <- renderPlotly({
+  #   plot_ly(labels=c("Food","EMI","Personal"),
+  #           values=c(2000,3500,1000),type='pie')
+  # })
+  
+  # observeEvent(sheet_data(), {
+  #   
+  #   df <- sheet_data()
+  #   
+  #   if(nrow(df) == 0) return()
+  #   
+  #   months <- df %>%
+  #     arrange(MonthYearDate) %>%
+  #     distinct(MonthYear) %>%
+  #     pull(MonthYear)
+  #   
+  #   if(length(months) == 0) return()
+  #   
+  #   updateSelectInput(
+  #     session,
+  #     "month_select",
+  #     choices = months,
+  #     selected = tail(months, 1)
+  #   )
+  #   
+  # }, ignoreInit = FALSE)
+  # 
+  # observe({
+  #   print(head(sheet_data()))
+  # })
+  # 
+  output$bar_chart <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    df_filtered <- df %>%
+      filter(MonthYear == input$month_select) %>%
+      group_by(Category) %>%
+      summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(TotalExpense))
+    
+    p <- ggplot(
+      df_filtered,
+      aes(
+        x = reorder(Category, TotalExpense),
+        y = TotalExpense,
+        text = paste("Category:", Category, "<br>Total:", TotalExpense)
+      )
+    ) +
+      geom_col(fill = "#009E73") +
+      coord_flip() +
+      theme_minimal() +
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()
+      )
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$subcat_total <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    total <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    paste0("₹ ", format(total, big.mark = ","))
+  })
+  
+  output$subcat_compare <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    months <- sort(unique(format(df$Date, "%b %Y")))
+    
+    current_index <- which(months == input$month_select)
+    
+    if(length(current_index) == 0 || current_index == 1){
+      return("No previous month data")
+    }
+    
+    current_month <- months[current_index]
+    previous_month <- months[current_index - 1]
+    
+    current_total <- df %>%
+      filter(format(Date, "%b %Y") == current_month) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    previous_total <- df %>%
+      filter(format(Date, "%b %Y") == previous_month) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    diff <- current_total - previous_total
+    
+    if(diff > 0){
+      paste0("⬆ Increased by ₹ ", format(diff, big.mark=","))
+    } else if(diff < 0){
+      paste0("⬇ Decreased by ₹ ", format(abs(diff), big.mark=","))
+    } else {
+      "No change from last month"
+    }
+  })
+  
+  output$subcat_chart <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    df_filtered <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select) %>%
+      group_by(`Sub-Category`) %>%
+      summarise(Total = sum(Expense), .groups = "drop") %>%
+      arrange(desc(Total))
+    
+    p <- ggplot(
+      df_filtered,
+      aes(
+        x = Total,
+        y = reorder(`Sub-Category`, Total),
+        text = paste("Sub-Category:", `Sub-Category`, "<br>Total: ₹", Total)
+      )
+    ) +
+      geom_col(fill = "#0ea5e9") +
+      theme_minimal() +
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()
+      )
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$subcat_pie <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    df_filtered <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select) %>%
+      group_by(`Sub-Category`) %>%
+      summarise(Total = sum(Expense), .groups = "drop")
+    
+    plot_ly(
+      df_filtered,
+      labels = ~`Sub-Category`,
+      values = ~Total,
+      type = "pie"
+    )
+  })
+  
+  output$household_total <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    household_categories <- c("To Home","Meat & Seafood","Groceries","Utility")
+    
+    current_total <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select,
+             Category %in% household_categories) %>%
+      summarise(Total = sum(Expense, na.rm = TRUE)) %>%
+      pull(Total)
+    
+    paste0("₹ ", format(current_total, big.mark = ","))
+  })
+  
+  output$household_compare <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    household_categories <- c("To Home","Meat & Seafood","Groceries","Utility")
+    
+    months <- sort(unique(format(df$Date, "%b %Y")))
+    
+    current_index <- which(months == input$month_select)
+    
+    if(length(current_index) == 0 || current_index == 1){
+      return("No previous month data")
+    }
+    
+    current_month <- months[current_index]
+    previous_month <- months[current_index - 1]
+    
+    current_total <- df %>%
+      filter(format(Date, "%b %Y") == current_month,
+             Category %in% household_categories) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    previous_total <- df %>%
+      filter(format(Date, "%b %Y") == previous_month,
+             Category %in% household_categories) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    diff <- current_total - previous_total
+    
+    if(diff > 0){
+      paste0("⬆ Increased by ₹ ", format(diff, big.mark=","))
+    } else if(diff < 0){
+      paste0("⬇ Decreased by ₹ ", format(abs(diff), big.mark=","))
+    } else {
+      "No change from last month"
+    }
+  })
+  
+  output$household_pie <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    household_categories <- c("To Home","Meat & Seafood","Groceries","Utility")
+    
+    df_filtered <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select,
+             Category %in% household_categories) %>%
+      group_by(Category) %>%
+      summarise(Total = sum(Expense), .groups = "drop")
+    
+    plot_ly(
+      df_filtered,
+      labels = ~Category,
+      values = ~Total,
+      type = "pie"
+    )
+  })
+  
+  output$analysis_content <- renderUI({
+    
+    req(input$analysis_type)
+    
+    if(input$analysis_type == "Category Expense"){
+      
+      tagList(
+        div(class="card",
+            plotlyOutput("bar_chart")
+        )
+      )
+      
+    }else if(input$analysis_type == "Sub-Category Expense"){
+      
+      tagList(
+        div(class="card",
+            strong("Sub-Category Spend"),
+            br(),
+            textOutput("subcat_total")
+        ),
+        
+        div(class="card",
+            textOutput("subcat_compare")
+        ),
+        
+        div(class="card",
+            plotlyOutput("subcat_chart")
+        ),
+        
+        div(class="card",
+            plotlyOutput("subcat_pie")
+        )
+      )
+    }else if(input$analysis_type == "Household Expense"){
+      
+      tagList(
+        div(class="card",
+            strong("Household Spend"),
+            br(),
+            textOutput("household_total")
+        ),
+        
+        div(class="card",
+            textOutput("household_compare")
+        ),
+        
+        div(class="card",
+            plotlyOutput("household_chart")
+        ),
+        
+        div(class="card",
+            plotlyOutput("household_pie")
+        )
+      )
+      
+    } else {
+      
+      tagList(
+        div(class="card",
+            strong("Personal Spend"),
+            br(),
+            textOutput("personal_total")
+        ),
+        
+        div(class="card",
+            textOutput("personal_compare")
+        ),
+        
+        div(class="card",
+            plotlyOutput("personal_chart")
+        ),
+        
+        div(class="card",
+            plotlyOutput("personal_pie")
+        )
+      )
+    }
+  })
+  
+  output$household_chart <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    household_categories <- c("To Home","Meat & Seafood","Groceries","Utility")
+    
+    df_filtered <- df %>%
+      filter(
+        format(Date, "%b %Y") == input$month_select,
+        Category %in% household_categories
+      ) %>%
+      group_by(Category) %>%
+      summarise(TotalExpense = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(TotalExpense))
+    
+    p <- ggplot(
+      df_filtered,
+      aes(
+        x = reorder(Category, TotalExpense),
+        y = TotalExpense,
+        text = paste("Category:", Category, "<br>Total: ₹", TotalExpense)
+      )
+    ) +
+      geom_col(fill = "#2563eb") +
+      coord_flip() +
+      theme_minimal() +
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()
+      )
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$personal_total <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    personal_categories <- c("Outside Food","Personal","Transport","Sweets","Leisure","Skin Care")
+    
+    total <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select,
+             Category %in% personal_categories) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    paste0("₹ ", format(total, big.mark = ","))
+  })
+  
+  output$personal_compare <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    personal_categories <- c("Outside Food","Personal","Transport","Sweets","Leisure","Skin Care")
+    
+    months <- sort(unique(format(df$Date, "%b %Y")))
+    
+    current_index <- which(months == input$month_select)
+    
+    if(length(current_index) == 0 || current_index == 1){
+      return("No previous month data")
+    }
+    
+    current_month <- months[current_index]
+    previous_month <- months[current_index - 1]
+    
+    current_total <- df %>%
+      filter(format(Date, "%b %Y") == current_month,
+             Category %in% personal_categories) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    previous_total <- df %>%
+      filter(format(Date, "%b %Y") == previous_month,
+             Category %in% personal_categories) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    diff <- current_total - previous_total
+    
+    if(diff > 0){
+      paste0("⬆ Increased by ₹ ", format(diff, big.mark=","))
+    } else if(diff < 0){
+      paste0("⬇ Decreased by ₹ ", format(abs(diff), big.mark=","))
+    } else {
+      "No change from last month"
+    }
+  })
+  
+  output$personal_chart <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    personal_categories <- c("Outside Food","Personal","Transport","Sweets","Leisure","Skin Care")
+    
+    df_filtered <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select,
+             Category %in% personal_categories) %>%
+      group_by(Category) %>%
+      summarise(Total = sum(Expense), .groups = "drop") %>%
+      arrange(desc(Total))
+    
+    p <- ggplot(df_filtered,
+                aes(x = reorder(Category, Total),
+                    y = Total,
+                    text = paste("Category:", Category, "<br>Total: ₹", Total))) +
+      geom_col(fill = "#f97316") +
+      coord_flip() +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$personal_pie <- renderPlotly({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    personal_categories <- c("Outside Food","Personal","Transport","Sweets","Leisure","Skin Care")
+    
+    df_filtered <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select,
+             Category %in% personal_categories) %>%
+      group_by(Category) %>%
+      summarise(Total = sum(Expense), .groups = "drop")
+    
+    plot_ly(
+      df_filtered,
+      labels = ~Category,
+      values = ~Total,
+      type = "pie"
+    )
+  })
+  
+  emi_data <- reactive({
+    
+    df <- sheet_data()
+    
+    emi_df <- df %>% 
+      filter(`Sub-Category` %in% c("Skillovilla EMI","Dental","Inverter")) %>% 
+      group_by(`Sub-Category`) %>% 
+      summarise(Paid = sum(Expense, na.rm = TRUE), .groups = "drop") %>% 
+      mutate(
+        Due = case_when(
+          `Sub-Category` == "Skillovilla EMI" ~ 41262,
+          `Sub-Category` == "Dental" ~ 24000,
+          `Sub-Category` == "Inverter" ~ 10000
+        ),
+        Remaining = Due - Paid,
+        Paid_Percent = round((Paid / Due) * 100, 1),
+        
+        Status = case_when(
+          Remaining <= 0 ~ "Paid",
+          Paid > 0 ~ "Partial",
+          TRUE ~ "Pending"
+        ),
+        
+        Item = `Sub-Category`
+      ) %>% 
+      select(Item, Due, Paid, Remaining, Paid_Percent, Status) %>% 
+      arrange(desc(Due))
+    
+    emi_df
+  })
+  
+  output$emi_table <- renderDT({
+    
+    df <- emi_data()
+    
+    # Compact progress bar
+    df$Progress <- paste0(
+      '<div style="background:#e5e7eb;border-radius:8px;height:16px;">',
+      '<div style="width:', df$Paid_Percent, '%;
+                 background:#16a34a;
+                 color:white;
+                 text-align:center;
+                 font-size:10px;
+                 line-height:16px;
+                 border-radius:8px;">',
+      df$Paid_Percent, '%</div></div>'
+    )
+    
+    # Compact colored status
+    df$Status <- ifelse(df$Status == "Paid",
+                        '<span style="color:green;font-size:11px;">●</span>',
+                        ifelse(df$Status == "Partial",
+                               '<span style="color:orange;font-size:11px;">●</span>',
+                               '<span style="color:red;font-size:11px;">●</span>'))
+    
+    datatable(
+      df[, c("Item","Due","Paid","Remaining","Progress","Status")],
+      escape = FALSE,
+      rownames = FALSE,
+      options = list(
+        pageLength = 5,
+        dom = 't',
+        autoWidth = TRUE
+      ),
+      class = "compact stripe"
+    )
+  })
+  
+  output$emi_pending <- renderText({
+    
+    df <- emi_data()
+    
+    total_pending <- sum(df$Remaining, na.rm = TRUE)
+    
+    if(total_pending == 0){
+      "All EMIs Cleared ✅"
+    } else {
+      paste0("₹ ", format(total_pending, big.mark = ","), " Pending")
+    }
+  })
+  
+}
+
+shinyApp(ui, server)
