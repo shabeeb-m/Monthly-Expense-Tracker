@@ -13,12 +13,40 @@ sheet_tab <- "Daily Expenses"
 budget_df <- data.frame(
   Category = c("Finance","Outside Food","Personal","Health","To Home",
                "Meat & Seafood","Groceries","Leisure","Transport","Utility","Skin Care"),
-  Budget = c(2000,2000,2000,1500,1000,2500,3000,500,1500,3500,1500)
+  Budget = c(3600,1500,500,500,1800,2500,2500,400,1000,2500,1800)
 )
 
 ui <- fluidPage(
   
   tags$head(tags$style(HTML("
+  
+  /* Smooth card entry animation */
+.card {
+  animation: fadeSlideUp 0.4s ease;
+}
+
+/* Keyframes */
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Bottom spacing (important) */
+.container {
+  padding-bottom: 80px;
+}
+
+/* Optional: smooth scroll feel */
+body {
+  scroll-behavior: smooth;
+}
+
     body {background:#f1f5f9; font-family:sans-serif;}
     .container {max-width:500px; margin:auto;}
 
@@ -84,7 +112,33 @@ ui <- fluidPage(
     table.dataTable th {
       padding: 4px !important;
       font-size: 11px;
+    }
+   
+   .card {
+  border-radius: 16px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: #ffffff;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+  animation: fadeSlideUp 0.4s ease;
 }
+
+  .card strong {
+    font-size: 14px;
+    color: #111827;
+  }
+
+  .card span, .card {
+    font-size: 13px;
+    color: #374151;
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #6b7280;
+    margin-bottom: 6px;
+  }
 
   "))),
   
@@ -190,6 +244,63 @@ server <- function(input, output, session){
     ))
   })
   
+  today_change <- reactive({
+    
+    df <- sheet_data()
+    
+    today_total <- df %>%
+      filter(Date == Sys.Date()) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    yesterday_total <- df %>%
+      filter(Date == Sys.Date() - 1) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    if(is.na(yesterday_total) || yesterday_total == 0){
+      return(NULL)
+    }
+    
+    pct <- round(((today_total - yesterday_total) / yesterday_total) * 100, 1)
+    
+    list(pct = pct)
+  })
+  
+  month_change <- reactive({
+    
+    df <- sheet_data()
+    
+    df <- df %>% mutate(MonthYear = format(Date, "%Y-%m"))
+    
+    current_month <- format(Sys.Date(), "%Y-%m")
+    
+    months <- sort(unique(df$MonthYear))
+    current_index <- which(months == current_month)
+    
+    if(length(current_index) == 0 || current_index == 1){
+      return(NULL)
+    }
+    
+    prev_month <- months[current_index - 1]
+    
+    current_total <- df %>%
+      filter(MonthYear == current_month) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    prev_total <- df %>%
+      filter(MonthYear == prev_month) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    if(prev_total == 0) return(NULL)
+    
+    pct <- round(((current_total - prev_total) / prev_total) * 100, 1)
+    
+    list(pct = pct)
+  })
+  
   today_spend <- reactive({
     
     df <- sheet_data()
@@ -293,6 +404,30 @@ server <- function(input, output, session){
     df %>% filter(Date %in% latest_dates)
   })
   
+  category_forecast <- reactive({
+    
+    df <- sheet_data()
+    
+    df <- df %>%
+      mutate(MonthYearDate = as.Date(format(Date, "%Y-%m-01")))
+    
+    df_cat <- df %>%
+      group_by(Category, MonthYearDate) %>%
+      summarise(Total = sum(Expense), .groups = "drop") %>%
+      arrange(Category, MonthYearDate)
+    
+    forecast_list <- df_cat %>%
+      group_by(Category) %>%
+      summarise(
+        Last = tail(Total,1),
+        Prev = ifelse(n() > 1, tail(Total,2)[1], Last),
+        Forecast = Last + (Last - Prev)*0.5,
+        .groups = "drop"
+      )
+    
+    forecast_list
+  })
+  
   output$screen <- renderUI({
     
     if(current_tab()=="home"){
@@ -314,30 +449,61 @@ server <- function(input, output, session){
               
               div(class="card",
                   style="background:#dcfce7;",
+                  
                   strong(paste0("₹ ", today_spend())),
                   br(),
-                  "Today"
+                  "Today’s Spend",
+                  
+                  if(!is.null(today_change())){
+                    
+                    pct <- today_change()$pct
+                    
+                    color <- ifelse(pct >= 0, "red", "green")
+                    sign <- ifelse(pct >= 0, "+", "")
+                    arrow <- ifelse(pct >= 0, "⬆", "⬇")
+                    
+                    div(
+                      style=paste0("color:", color, "; font-size:12px; margin-top:5px;"),
+                      paste0(arrow, " ", sign, pct, "% vs yesterday")
+                    )
+                  }
               ),
               
               div(class="card",
                   style="background:#e0f2fe;",
+                  
                   strong(paste0("₹ ", s$total)),
                   br(),
-                  "Total"
+                  "Total Spent This Month",
+                  
+                  if(!is.null(month_change())){
+                    
+                    pct <- month_change()$pct
+                    
+                    color <- ifelse(pct >= 0, "red", "green")
+                    sign <- ifelse(pct >= 0, "+", "")
+                    
+                    div(
+                      style=paste0("color:", color, "; font-size:12px; margin-top:5px;"),
+                      paste0(sign, pct, "% vs last month")
+                    )
+                  }
               ),
               
               div(class="card",
                   style="background:#f3e8ff;",
                   strong(paste0("₹ ", s$balance)),
                   br(),
-                  "Balance"
+                  "Total Balance"
               ),
               
               div(class="card",
                   style="background:#fff7ed;",
-                  strong(s$highest_cat),
+                  "Highest spending",
                   br(),
-                  paste0("₹ ", s$highest_amt)
+                  s$highest_cat,
+                  br(),
+                  strong(paste0("₹ ", s$highest_amt))
               )
           ),
           div(class="card",
@@ -345,6 +511,17 @@ server <- function(input, output, session){
               strong(s$emi_status),
               br(),
               s$emi_sub
+          ),
+          
+          div(class="card",
+              style="background:#ecfeff; padding:10px;",
+              
+              div(style="display:flex; flex-direction:column; gap:4px; font-size:12px;",
+                  
+                  div(textOutput("daily_alert", inline=TRUE)),
+                  
+                  div(textOutput("smart_advice", inline=TRUE))
+              )
           ),
           
           div(class="card",
@@ -421,12 +598,13 @@ server <- function(input, output, session){
                        div(style="font-size:12px;",
                            selectInput("analysis_type", "Analysis",
                                        choices = c(
+                                         "Monthly Trend",
                                          "Category Expense",
                                          "Sub-Category Expense",
                                          "Household Expense",
                                          "Personal Expense"
                                        ),
-                                       selected = "Category Expense",
+                                       selected = "Monthly Trend",
                                        width = "100%")
                        )
                 )
@@ -531,37 +709,99 @@ server <- function(input, output, session){
     }
   })
   
-  # output$pie <- renderPlotly({
-  #   plot_ly(labels=c("Food","EMI","Personal"),
-  #           values=c(2000,3500,1000),type='pie')
-  # })
+  output$daily_alert <- renderText({
+    
+    df <- sheet_data()
+    
+    current_month <- format(Sys.Date(), "%Y-%m")
+    
+    total_spent <- df %>%
+      filter(format(Date, "%Y-%m") == current_month) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    total_budget <- sum(budget_df$Budget)
+    
+    usage <- (total_spent / total_budget) * 100
+    
+    if(usage > 90){
+      paste0("🚨 ", round(usage), "% of budget used (Critical)")
+    } else if(usage > 75){
+      paste0("⚠ ", round(usage), "% of budget used (Warning)")
+    } else {
+      paste0("✅ ", round(usage), "% of budget used")
+    }
+  })
   
-  # observeEvent(sheet_data(), {
-  #   
-  #   df <- sheet_data()
-  #   
-  #   if(nrow(df) == 0) return()
-  #   
-  #   months <- df %>%
-  #     arrange(MonthYearDate) %>%
-  #     distinct(MonthYear) %>%
-  #     pull(MonthYear)
-  #   
-  #   if(length(months) == 0) return()
-  #   
-  #   updateSelectInput(
-  #     session,
-  #     "month_select",
-  #     choices = months,
-  #     selected = tail(months, 1)
-  #   )
-  #   
-  # }, ignoreInit = FALSE)
-  # 
-  # observe({
-  #   print(head(sheet_data()))
-  # })
-  # 
+  output$smart_advice <- renderText({
+    
+    df <- sheet_data()
+    
+    df_month <- df %>%
+      filter(format(Date, "%Y-%m") == format(Sys.Date(), "%Y-%m")) %>%
+      group_by(Category) %>%
+      summarise(Total = sum(Expense), .groups="drop") %>%
+      arrange(desc(Total))
+    
+    if(nrow(df_month) == 0) return(NULL)
+    
+    top_cat <- df_month$Category[1]
+    
+    paste0("💡 Reduce ", top_cat, " spending to improve savings")
+  })
+  
+  output$cat_total <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    total <- df %>%
+      filter(format(Date, "%b %Y") == input$month_select) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    paste0("₹ ", format(total, big.mark = ","))
+  })
+  
+  output$cat_compare <- renderText({
+    
+    req(input$month_select)
+    
+    df <- sheet_data()
+    
+    months <- sort(unique(format(df$Date, "%b %Y")))
+    
+    current_index <- which(months == input$month_select)
+    
+    if(length(current_index) == 0 || current_index == 1){
+      return("No previous month data")
+    }
+    
+    current_month <- months[current_index]
+    previous_month <- months[current_index - 1]
+    
+    current_total <- df %>%
+      filter(format(Date, "%b %Y") == current_month) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    previous_total <- df %>%
+      filter(format(Date, "%b %Y") == previous_month) %>%
+      summarise(sum(Expense)) %>%
+      pull()
+    
+    diff <- current_total - previous_total
+    
+    if(diff > 0){
+      paste0("⬆ Increased by ₹ ", format(diff, big.mark=","))
+    } else if(diff < 0){
+      paste0("⬇ Decreased by ₹ ", format(abs(diff), big.mark=","))
+    } else {
+      "No change from last month"
+    }
+  })
+  
   output$bar_chart <- renderPlotly({
     
     req(input$month_select)
@@ -591,6 +831,353 @@ server <- function(input, output, session){
       )
     
     ggplotly(p, tooltip = "text")
+  })
+  
+  month_projection <- reactive({
+    
+    df <- sheet_data()
+    
+    today <- Sys.Date()
+    
+    current_month <- format(today, "%Y-%m")
+    
+    df_current <- df %>%
+      filter(format(Date, "%Y-%m") == current_month)
+    
+    if(nrow(df_current) == 0) return(NULL)
+    
+    # total spent so far
+    total_spent <- sum(df_current$Expense, na.rm = TRUE)
+    
+    # days passed
+    days_passed <- as.numeric(format(today, "%d"))
+    
+    # total days in month
+    total_days <- as.numeric(format(
+      as.Date(paste0(format(today, "%Y-%m"), "-01")) + 32, "%d"
+    ))
+    
+    # daily average
+    daily_avg <- total_spent / days_passed
+    
+    # projection
+    projected <- daily_avg * total_days
+    
+    list(
+      projected = projected,
+      current = total_spent
+    )
+  })
+  
+  
+  
+  forecast_calc <- reactive({
+    
+    df <- sheet_data()
+    
+    df_all <- df %>%
+      group_by(MonthYearDate) %>%
+      summarise(Total = sum(Expense), .groups = "drop") %>%
+      arrange(MonthYearDate)
+    
+    df_completed <- df_all %>%
+      filter(MonthYearDate < as.Date(format(Sys.Date(), "%Y-%m-01")))
+    
+    if(nrow(df_completed) < 2){
+      return(NULL)
+    }
+    
+    last_n <- tail(df_completed$Total, 3)
+    avg_forecast <- mean(last_n, na.rm = TRUE)
+    
+    trend <- tail(df_completed$Total,1) - tail(df_completed$Total,2)[1]
+    
+    forecast_value <- avg_forecast + (0.5 * trend)
+    
+    last_actual <- tail(df_completed$Total,1)
+    
+    list(
+      forecast = forecast_value,
+      last_actual = last_actual,
+      df_completed = df_completed
+    )
+  })
+  
+  output$forecast_text <- renderUI({
+    
+    fc <- forecast_calc()
+    if(is.null(fc)) return(NULL)
+    
+    forecast_value <- fc$forecast
+    last_actual <- fc$last_actual
+    
+    diff_pct <- round(((forecast_value - last_actual) / last_actual) * 100, 1)
+    
+    # 🎨 STYLE LOGIC
+    if(diff_pct > 5){
+      bg_color <- "#fee2e2"   # red
+      text_color <- "#991b1b"
+      icon <- "⬆"
+      msg <- "Spending likely increasing"
+    } else if(diff_pct < -5){
+      bg_color <- "#dcfce7"   # green
+      text_color <- "#166534"
+      icon <- "⬇"
+      msg <- "Spending likely decreasing"
+    } else {
+      bg_color <- "#f3f4f6"   # neutral
+      text_color <- "#374151"
+      icon <- "➖"
+      msg <- "Spending likely stable"
+    }
+    
+    sign <- ifelse(diff_pct > 0, "+", "")
+    
+    div(
+      class = "card",
+      style = paste0("background:", bg_color, "; color:", text_color, ";"),
+      
+      strong(
+        paste0("Forecast: ₹ ", round(forecast_value))
+      ),
+      
+      br(),
+      
+      span(
+        style="font-size:13px;",
+        paste0(icon, " ", sign, diff_pct, "% | ", msg)
+      )
+    )
+  })
+  
+  output$projection_card <- renderUI({
+    
+    mp <- month_projection()
+    if(is.null(mp)) return(NULL)
+    
+    projected <- mp$projected
+    current <- mp$current
+    
+    diff <- projected - current
+    
+    # 🎨 styling
+    if(diff > 0){
+      bg_color <- "#fff7ed"
+      text_color <- "#9a3412"
+      icon <- "⬆"
+      msg <- "Spending will increase"
+    } else {
+      bg_color <- "#ecfeff"
+      text_color <- "#155e75"
+      icon <- "⬇"
+      msg <- "Spending under control"
+    }
+    
+    div(
+      class="card",
+      style=paste0("background:", bg_color, "; color:", text_color, ";"),
+      
+      strong(paste0("Projected: ₹ ", round(projected))),
+      br(),
+      
+      span(
+        style="font-size:13px;",
+        paste0(icon, " ", msg)
+      )
+    )
+  })
+  
+  output$burn_rate <- renderText({
+    
+    df <- sheet_data()
+    
+    today <- Sys.Date()
+    
+    df_current <- df %>%
+      filter(format(Date, "%Y-%m") == format(today, "%Y-%m"))
+    
+    if(nrow(df_current) == 0) return(NULL)
+    
+    total_spent <- sum(df_current$Expense, na.rm = TRUE)
+    days_passed <- as.numeric(format(today, "%d"))
+    
+    burn_rate <- total_spent / days_passed
+    
+    paste0("🔥 Avg daily spend: ₹ ", round(burn_rate))
+  })
+  
+  output$budget_exhaust <- renderText({
+    
+    df <- sheet_data()
+    
+    today <- Sys.Date()
+    
+    df_current <- df %>%
+      filter(format(Date, "%Y-%m") == format(today, "%Y-%m"))
+    
+    total_spent <- sum(df_current$Expense, na.rm = TRUE)
+    
+    total_budget <- sum(budget_df$Budget)
+    
+    remaining <- total_budget - total_spent
+    
+    days_passed <- as.numeric(format(today, "%d"))
+    
+    burn_rate <- total_spent / days_passed
+    
+    if(burn_rate == 0) return(NULL)
+    
+    days_left <- remaining / burn_rate
+    
+    paste0("⏳ Budget may last ~ ", round(days_left), " more days")
+  })
+  
+  output$stop_alert <- renderText({
+    
+    df <- sheet_data()
+    
+    today <- Sys.Date()
+    
+    today_spent <- df %>%
+      filter(Date == today) %>%
+      summarise(sum(Expense, na.rm = TRUE)) %>%
+      pull()
+    
+    df_current <- df %>%
+      filter(format(Date, "%Y-%m") == format(today, "%Y-%m"))
+    
+    total_spent <- sum(df_current$Expense)
+    days_passed <- as.numeric(format(today, "%d"))
+    
+    avg <- total_spent / days_passed
+    
+    if(today_spent > (avg * 1.5)){
+      paste0("🚨 High spend today: ₹ ", today_spent, " (above normal)")
+    } else {
+      NULL
+    }
+  })
+  
+  output$goal_tracker <- renderUI({
+    
+    df <- sheet_data()
+    
+    today <- Sys.Date()
+    
+    df_current <- df %>%
+      filter(format(Date, "%Y-%m") == format(today, "%Y-%m"))
+    
+    total_spent <- sum(df_current$Expense)
+    total_budget <- sum(budget_df$Budget)
+    
+    percent <- round((total_spent / total_budget) * 100)
+    
+    div(
+      class="card",
+      style="background:#eef2ff;",
+      
+      strong("Budget Usage"),
+      br(),
+      
+      div(style="background:#e5e7eb;border-radius:10px;height:12px;",
+          div(style=paste0(
+            "width:", percent, "%;",
+            "background:#4f46e5;",
+            "height:12px;border-radius:10px;"
+          ))
+      ),
+      
+      br(),
+      paste0(percent, "% of budget used")
+    )
+  })
+  
+  output$anomaly_alert <- renderText({
+    
+    df <- sheet_data()
+    
+    if(nrow(df) < 5) return(NULL)
+    
+    # Calculate mean & sd
+    avg <- mean(df$Expense, na.rm = TRUE)
+    sd_val <- sd(df$Expense, na.rm = TRUE)
+    
+    # threshold (mean + 2*sd)
+    threshold <- avg + (2 * sd_val)
+    
+    # find anomalies (recent ones)
+    anomalies <- df %>%
+      filter(Expense > threshold) %>%
+      arrange(desc(Date)) %>%
+      head(1)
+    
+    if(nrow(anomalies) == 0) return(NULL)
+    
+    paste0(
+      "🚨 Unusual spend detected: ₹ ",
+      anomalies$Expense,
+      " on ", anomalies$Category
+    )
+  })
+  
+  output$monthly_chart <- renderPlotly({
+    
+    df <- sheet_data()
+    
+    df_month <- df %>%
+      group_by(MonthYear, MonthYearDate) %>%
+      summarise(Total = sum(Expense, na.rm = TRUE), .groups = "drop") %>%
+      arrange(MonthYearDate)
+    
+    # 🔢 Moving average (last 3 months)
+    last_n <- tail(df_month$Total, 3)
+    avg_forecast <- mean(last_n, na.rm = TRUE)
+    
+    # 📈 Trend (difference between last 2 months)
+    if(nrow(df_month) >= 2){
+      trend <- tail(df_month$Total,1) - tail(df_month$Total,2)[1]
+    } else {
+      trend <- 0
+    }
+    
+    # 🔮 Final forecast
+    forecast_value <- avg_forecast + (0.5 * trend)
+    
+    next_month_date <- seq(max(df_month$MonthYearDate), by = "1 month", length.out = 2)[2]
+    
+    fc <- forecast_calc()
+    
+    forecast_df <- data.frame(
+      MonthYearDate = seq(max(fc$df_completed$MonthYearDate),
+                          by = "1 month", length.out = 2)[2],
+      Total = fc$forecast
+    )
+    
+    df_plot <- rbind(
+      df_month %>% select(MonthYearDate, Total),
+      forecast_df
+    )
+    
+    p <- ggplot(df_plot, aes(x = MonthYearDate, y = Total)) +
+      
+      geom_line(color="#6366f1", size=1) +
+      geom_point(color="#6366f1", size=2) +
+      
+      # 🔴 Forecast point
+      geom_point(data = forecast_df, color="red", size=3) +
+      
+      # dashed forecast line
+      geom_line(data = tail(df_plot,2), linetype="dashed", color="red") +
+      
+      scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+      
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle=45, hjust=1),
+        axis.title = element_blank()
+      )
+    
+    ggplotly(p)
   })
   
   output$subcat_total <- renderText({
@@ -673,25 +1260,6 @@ server <- function(input, output, session){
       )
     
     ggplotly(p, tooltip = "text")
-  })
-  
-  output$subcat_pie <- renderPlotly({
-    
-    req(input$month_select)
-    
-    df <- sheet_data()
-    
-    df_filtered <- df %>%
-      filter(format(Date, "%b %Y") == input$month_select) %>%
-      group_by(`Sub-Category`) %>%
-      summarise(Total = sum(Expense), .groups = "drop")
-    
-    plot_ly(
-      df_filtered,
-      labels = ~`Sub-Category`,
-      values = ~Total,
-      type = "pie"
-    )
   })
   
   output$household_total <- renderText({
@@ -783,10 +1351,75 @@ server <- function(input, output, session){
       
       tagList(
         div(class="card",
+            strong("Category Spend"),
+            br(),
+            textOutput("cat_total")
+        ),
+        
+        div(class="card",
+            textOutput("cat_compare")
+        ),
+        
+        div(class="card",
             plotlyOutput("bar_chart")
         )
       )
       
+    }else if(input$analysis_type == "Monthly Trend"){
+      
+      tagList(
+        
+        # 🔮 Forecast + Projection (keep as is but grouped)
+        div(class="card",
+            div(style="display:flex; justify-content:space-between;",
+                
+                div(style="width:48%;",
+                    uiOutput("forecast_text")
+                ),
+                
+                div(style="width:48%;",
+                    uiOutput("projection_card")
+                )
+            )
+        ),
+        
+        # 🔥 INSIGHTS (MERGED)
+        div(class="card",
+            style="background:#fefce8;",
+            
+            div(class="section-title","Insights"),
+            
+            div("🔥 ", textOutput("burn_rate", inline=TRUE)),
+            div("⏳ ", textOutput("budget_exhaust", inline=TRUE)),
+            div("💡 ", textOutput("smart_suggestions", inline=TRUE))
+        ),
+        
+        # 📊 BUDGET HEALTH (MERGED)
+        div(class="card",
+            style="background:#eef2ff;",
+            
+            strong("Budget Health"),
+            br(), br(),
+            
+            uiOutput("goal_tracker")
+        ),
+        
+        # ⚠ ALERTS (MERGED + CLEANED)
+        div(class="card",
+            style="background:#fee2e2;",
+            
+            div(class="section-title","Alerts"),
+            
+            div(textOutput("stop_alert", inline=TRUE)),
+            div(textOutput("anomaly_alert", inline=TRUE)),
+            div(textOutput("budget_alert", inline=TRUE))
+        ),
+        
+        # 📈 CHART
+        div(class="card",
+            plotlyOutput("monthly_chart")
+        )
+      )
     }else if(input$analysis_type == "Sub-Category Expense"){
       
       tagList(
@@ -802,10 +1435,6 @@ server <- function(input, output, session){
         
         div(class="card",
             plotlyOutput("subcat_chart")
-        ),
-        
-        div(class="card",
-            plotlyOutput("subcat_pie")
         )
       )
     }else if(input$analysis_type == "Household Expense"){
@@ -890,6 +1519,41 @@ server <- function(input, output, session){
     ggplotly(p, tooltip = "text")
   })
   
+  output$budget_alert <- renderText({
+    
+    fc <- category_forecast()
+    
+    merged <- merge(fc, budget_df, by="Category", all.x=TRUE)
+    
+    risky <- merged %>%
+      filter(Forecast > Budget)
+    
+    if(nrow(risky) == 0){
+      return("✅ All categories within expected budget")
+    }
+    
+    paste0(
+      "⚠ Risk: ",
+      paste(risky$Category, collapse=", "),
+      " may exceed budget"
+    )
+  })
+  
+  output$smart_suggestions <- renderText({
+    
+    fc <- category_forecast()
+    
+    top <- fc %>%
+      arrange(desc(Forecast)) %>%
+      head(2)
+    
+    paste0(
+      "💡 Consider reducing spending in ",
+      paste(top$Category, collapse=" & "),
+      " next month"
+    )
+  })
+  
   output$personal_total <- renderText({
     
     req(input$month_select)
@@ -970,7 +1634,11 @@ server <- function(input, output, session){
                     text = paste("Category:", Category, "<br>Total: ₹", Total))) +
       geom_col(fill = "#f97316") +
       coord_flip() +
-      theme_minimal()
+      theme_minimal()+
+      theme(
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()
+      )
     
     ggplotly(p, tooltip = "text")
   })
